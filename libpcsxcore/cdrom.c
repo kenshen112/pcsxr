@@ -1194,7 +1194,8 @@ void cdrReadInterrupt() {
 		if((cdr.Transfer[4 + 2] & 0x4) &&
 			 (cdr.Transfer[4 + 1] == cdr.Channel) &&
 			 (cdr.Transfer[4 + 0] == cdr.File)) {
-			int ret = xa_decode_sector(&cdr.Xa, cdr.Transfer+4, cdr.FirstSector);
+			xa_subheader_t* xa = (xa_subheader_t*)&cdr.Transfer[4];
+			int ret = xa_decode_sector(xa, &cdr.Xa, cdr.Transfer + 4);
 			if (!ret) {
 				cdrAttenuate(cdr.Xa.pcm, cdr.Xa.nsamples, cdr.Xa.stereo);
 				SPU_playADPCMchannel(&cdr.Xa);

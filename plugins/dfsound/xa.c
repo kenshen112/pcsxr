@@ -325,7 +325,7 @@ static INLINE void FeedXA(xa_decode_t *xap)
 
  if(xap->stereo)
 {
-   uint32_t * pS=(uint32_t *)xap->pcm;
+   uint32_t * pS=(uint32_t *)xap->pcm[0];
    uint32_t l=0;
 
    if(iXAPitch)
@@ -388,7 +388,7 @@ static INLINE void FeedXA(xa_decode_t *xap)
   }
  else
   {
-   unsigned short * pS=(unsigned short *)xap->pcm;
+   unsigned short * pS=(unsigned short *)xap->pcm[0];
    uint32_t l;short s=0;
 
    if(iXAPitch)
