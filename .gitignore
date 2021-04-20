@@ -13,3 +13,4 @@ project.xcworkspace
 build/
 *.suo
 *.VC.db
+/win32/.vs/pcsxr/v16

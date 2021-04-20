@@ -26,32 +26,22 @@ extern "C" {
 
 #include "psxcommon.h"
 
-typedef struct {
-	s32	y0, y1;
-} ADPCM_Decode_t;
+	typedef struct {
+		s32	y0, y1;
+	} ADPCM_Decode_t;
 
-typedef struct {
-	int				freq;
-	int				nbits;
-	int				stereo;
-	int				nsamples;
-	ADPCM_Decode_t	left, right;
-	short			pcm[2][16384];
-} xa_decode_t;
+	typedef struct {
+		int				freq;
+		int				nbits;
+		int				stereo;
+		int				nsamples;
+		ADPCM_Decode_t	left, right;
+		short			pcm[16384];
+	} xa_decode_t;
 
-typedef struct {
-	u8  filenum;
-	u8  channum;
-	u8  submode;
-	u8  coding;
-
-	u8  filenum2;
-	u8  channum2;
-	u8  submode2;
-	u8  coding2;
-} xa_subheader_t;
-
-s32 xa_decode_sector(xa_subheader_t* header, xa_decode_t* decoded, u8* xaData);
+	s32 xa_decode_sector(xa_decode_t* xdp,
+		unsigned char* sectorp,
+		int is_first_sector);
 
 #ifdef __cplusplus
 }

@@ -26,7 +26,7 @@
 #define FIXED
 
 #define NOT(_X_)				(!(_X_))
-#define CLAMP(_X_,_MI_,_MA_)	{if(_X_<_MI_)_X_=_MI_;if(_X_>_MA_)_X_=_MA_;}
+#define XACLAMP(_X_,_MI_,_MA_)	{if(_X_<_MI_)_X_=_MI_;if(_X_>_MA_)_X_=_MA_;}
 
 #define SH	4
 #define SHC	10
@@ -38,9 +38,9 @@ static const s32 tbl_XA_Factor[16][2] = {
 	{115, -52},
 	{98, -55} };
 
-//============================================
-//===  ADPCM DECODING ROUTINES
-//============================================
+ //============================================
+ //===  ADPCM DECODING ROUTINES
+ //============================================
 
 #ifndef FIXED
 static double K0[4] = {
@@ -75,8 +75,7 @@ static int K1[4] = {
 #define BLKSIZ 28       /* block size (32 - 4 nibbles) */
 
 //===========================================
-void ADPCM_InitDecode(ADPCM_Decode_t* decp)
-{
+void ADPCM_InitDecode(ADPCM_Decode_t* decp) {
 	decp->y0 = 0;
 	decp->y1 = 0;
 }
@@ -90,139 +89,210 @@ void ADPCM_InitDecode(ADPCM_Decode_t* decp)
 #define IK1(fid)	(-K1[fid])
 #endif
 
-static __inline void ADPCM_DecodeBlock16(const u8* block_header, xa_decode_t* xdp, const u8* samples, ADPCM_Decode_t* decp, int channel, short* destp)
+static __inline void ADPCM_DecodeBlock16(const u8 block_header, xa_decode_t* header, const u16* samples, ADPCM_Decode_t* decp, int channel, short* destp)
 {
 	// Extract 4 or 8 bit nibble depending on BPS
-	int bps = xdp->nbits;
+	int bps = header->nbits ? 8 : 4;
 
-	//printf("Bps: %01d", bps);
-	u32 sampleData = 0;
-	s32 nibble = 0;
-	s32 finalSample = 0;
+	//Console.Warning("Bps: %01d", bps);
+	u32 word = 0;
+	u32 nibble = 0;
+	u32 finalSample = 0;
 
-	s32 fy0, fy1;
+	u8 shift = ((block_header >> 0) & 0x0f);
+	u8 filter = ((block_header >> 4) & 0x0f);
+	s32 filterPos = tbl_XA_Factor[filter][0];
+	s32 filterNeg = tbl_XA_Factor[filter][1];
 
-	fy0 = decp->y0;
-	fy1 = decp->y1;
-
-	for (int block = 0; block < 28 / 4; block++)
+	for (u32 block = 0; block < bps; block++)
 	{
-		//printf("Shift: %02x", shift);
-		//printf("Filter: %02x", filter);
+		//printf("Bps: %01d", bps);
 
-		if (bps == 4)
-		{
-			nibble = ((sampleData >> (block * bps)) & 0x0F);
-		}
-		if (xdp->nsamples == 37800 && bps == 8)
-		{
-			nibble = ((sampleData >> (block * bps)) & 0xFF);
-		}
+		s32 fy0, fy1;
 
-		u8 shift = 12 - (block_header[4 + block] & 0xF);
-		u8 filter = (block_header[4 + block] & 0x30) >> 4;
-		s32 filterPos = tbl_XA_Factor[filter][0];
-		s32 filterNeg = tbl_XA_Factor[filter][1];
+		fy0 = decp->y0;
+		fy1 = decp->y1;
 
-		for (int i = 0; i < 28; i++)
+		for (int block = 0; block < 28; block++)
 		{
-			s16 sam = (nibble << 12) >> shift;
+			word = *samples++;
+			//printf("Shift: %02x", shift);
+			//printf("Filter: %02x", filter);
+			s16 sam = (word << 12) >> shift;
 			//printf("Data: %02x", sampleData);
 			//printf("Nibble: %02x", nibble);
 
-			finalSample = (sam << shift) + ((fy0 * filterPos) + (fy1 * filterNeg) + 32) / 64;
+			finalSample = (sam << shift) + ((fy0 * IK0(filter)) + (fy1 * IK1(filter)) + 32) / 64;
 
-			CLAMP(finalSample, 32768, 32767);
+			XACLAMP(finalSample, -32768 << SH, 32767 << SH);
 			//printf("Sample: %02x", finalSample);
 			*(destp++) = finalSample;
+
+			decp->y0 = fy0;
+			decp->y1 = fy1;
 		}
-		decp->y0 = fy0;
-		decp->y1 = fy1;
 	}
 }
-
 static int headtable[4] = { 0,2,8,10 };
 
 //===========================================
-static void xa_decode_data(xa_subheader_t* header, xa_decode_t* decoded, u8* xaData)
-{
-	u8* block_header, * sound_datap, * sound_datap2;
-	u8 filterPos;
-	int i, j, k, nbits;
-	u16 data[4096], * datap;
-	u32* Left, * Right;
+static void xa_decode_data(xa_decode_t* xdp, unsigned char* srcp) {
+	const u8* sound_groupsp;
+	const u8* sound_datap, * sound_datap2;
+	int         i, j, k, nbits;
+	u16			data[4096], * datap;
+	short* destp;
 
-	//nbits = decoded->nbits == 4 ? 4 : 2;
+	destp = xdp->pcm;
+	nbits = xdp->nbits == 4 ? 4 : 2;
 
-	// TODO. Extract and mix sample data
-	//block_header = xaData + 4;1
+	if (xdp->stereo) { // stereo
+		if ((xdp->nbits == 8) && (xdp->freq == 37800)) { // level A
+			for (j = 0; j < 18; j++) {
+				sound_groupsp = srcp + j * 128;		// sound groups header
+				sound_datap = sound_groupsp + 16;	// sound data just after the header
 
-	// 16 bytes after header
-	//sound_datap = block_header + 16;
+				for (i = 0; i < nbits; i++) {
+					datap = data;
+					sound_datap2 = sound_datap + i;
 
-	sound_datap = (u8)malloc(4096);
+					for (k = 0; k < 14; k++, sound_datap2 += 8) {
+						*(datap++) = (u16)sound_datap2[0] |
+							(u16)(sound_datap2[4] << 8);
+					}
 
-	Left = (u32)malloc(8192);
-	Right = (u32)malloc(8192);
+					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 0], xdp, data, &xdp->left,
+						0, destp + 0);
 
-	for (j = 0; j < 18; j++)
-	{
-		// 4 bit vs 8 bit sound
-		for (int i = 0; i < decoded->nbits; i++)
-		{
-			block_header = xaData + j * 128;		// sound groups header
-			sound_datap = block_header + 16;	// sound data just after the header
-			datap = data;
-			sound_datap2 = sound_datap + i;
+					datap = data;
+					sound_datap2 = sound_datap + i;
+					for (k = 0; k < 14; k++, sound_datap2 += 8) {
+						*(datap++) = (u16)sound_datap2[0] |
+							(u16)(sound_datap2[4] << 8);
+					}
+					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 1], xdp, data, &xdp->right,
+						1, destp + 1);
 
-			// Odds are Left positives are Right
-			// Note, the interleave changes based on SampleRate, Stenznek mentioned some games like rugrats
-			// handle this interleave incorrectly and will spam the buffer with too much data.
-			// We must crash and clear the buffer for audio to continue?
-			for (u32 k = 0; k < 7; k++, sound_datap2 += 2)
-			{
-				u32 sampleData = (u32)(sound_datap2[0] & 0x0f);
-				sampleData |= (u32)((sound_datap2[4] & 0x0f) << 4);
-				sampleData |= (u32)((sound_datap2[8] & 0x0f) << 8);
-				sampleData |= (u32)((sound_datap2[12] & 0x0f) << 12);
-				if (i % 2)
-				{
-					Right[i] = sampleData;
+					destp += 28 * 2;
 				}
-				else
-				{
-					Left[i] = sampleData;
-				}
-			}
-			if (decoded->stereo)
-			{
-				// Allocate maximum sample size
-				//cdr.Xa.pcm[0].reserve(16384);
-				//cdr.Xa.pcm[1].reserve(16384);
-
-				ADPCM_DecodeBlock16(block_header, header, Left, &decoded->left, 0, decoded->pcm[0]);
-				ADPCM_DecodeBlock16(block_header, header, Right, &decoded->right, 1, decoded->pcm[1]);
-
-				//Console.Warning("Sample L: %02x", decoded->pcm[0].front());
-				//Console.Warning("Sample R: %02x", decoded->pcm[1].front());
-			}
-			else
-			{
-				// Mono sound
-				//cdr.Xa.pcm[0].reserve(16384);
-				ADPCM_DecodeBlock16(block_header, header, Left, &decoded->left, 0, decoded->pcm[0]);
-				ADPCM_DecodeBlock16(block_header, header, Right, &decoded->left, 0, decoded->pcm[0]);
-
-				//Console.Warning("Sample M: %02x", decoded->pcm[0].front());
 			}
 		}
-		sound_datap++;
+		else { // level B/C
+			for (j = 0; j < 18; j++) {
+				sound_groupsp = srcp + j * 128;		// sound groups header
+				sound_datap = sound_groupsp + 16;	// sound data just after the header
+
+				for (i = 0; i < nbits; i++) {
+					datap = data;
+					sound_datap2 = sound_datap + i;
+
+					for (k = 0; k < 7; k++, sound_datap2 += 16) {
+						*(datap++) = (u16)(sound_datap2[0] & 0x0f) |
+							((u16)(sound_datap2[4] & 0x0f) << 4) |
+							((u16)(sound_datap2[8] & 0x0f) << 8) |
+							((u16)(sound_datap2[12] & 0x0f) << 12);
+					}
+					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 0], xdp, data, &xdp->left,
+						0, destp + 0);
+
+					datap = data;
+					sound_datap2 = sound_datap + i;
+					for (k = 0; k < 7; k++, sound_datap2 += 16) {
+						*(datap++) = (u16)(sound_datap2[0] >> 4) |
+							((u16)(sound_datap2[4] >> 4) << 4) |
+							((u16)(sound_datap2[8] >> 4) << 8) |
+							((u16)(sound_datap2[12] >> 4) << 12);
+					}
+					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 1], xdp, data, &xdp->right,
+						1, destp + 1);
+
+					destp += 28 * 2;
+				}
+			}
+		}
+	}
+	else { // mono
+		if ((xdp->nbits == 8) && (xdp->freq == 37800)) { // level A
+			for (j = 0; j < 18; j++) {
+				sound_groupsp = srcp + j * 128;		// sound groups header
+				sound_datap = sound_groupsp + 16;	// sound data just after the header
+
+				for (i = 0; i < nbits; i++) {
+					datap = data;
+					sound_datap2 = sound_datap + i;
+					for (k = 0; k < 14; k++, sound_datap2 += 8) {
+						*(datap++) = (u16)sound_datap2[0] |
+							(u16)(sound_datap2[4] << 8);
+					}
+					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 0], xdp, data, &xdp->left,
+						0, destp);
+
+					destp += 28;
+
+					datap = data;
+					sound_datap2 = sound_datap + i;
+					for (k = 0; k < 14; k++, sound_datap2 += 8) {
+						*(datap++) = (u16)sound_datap2[0] |
+							(u16)(sound_datap2[4] << 8);
+					}
+					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 1], xdp, data, &xdp->left,
+						0, destp);
+
+					destp += 28;
+				}
+			}
+		}
+		else { // level B/C
+			for (j = 0; j < 18; j++) {
+				sound_groupsp = srcp + j * 128;		// sound groups header
+				sound_datap = sound_groupsp + 16;	// sound data just after the header
+
+				for (i = 0; i < nbits; i++) {
+					datap = data;
+					sound_datap2 = sound_datap + i;
+					for (k = 0; k < 7; k++, sound_datap2 += 16) {
+						*(datap++) = (u16)(sound_datap2[0] & 0x0f) |
+							((u16)(sound_datap2[4] & 0x0f) << 4) |
+							((u16)(sound_datap2[8] & 0x0f) << 8) |
+							((u16)(sound_datap2[12] & 0x0f) << 12);
+					}
+					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 0], xdp, data, &xdp->left,
+						0, destp);
+
+					destp += 28;
+
+					datap = data;
+					sound_datap2 = sound_datap + i;
+					for (k = 0; k < 7; k++, sound_datap2 += 16) {
+						*(datap++) = (u16)(sound_datap2[0] >> 4) |
+							((u16)(sound_datap2[4] >> 4) << 4) |
+							((u16)(sound_datap2[8] >> 4) << 8) |
+							((u16)(sound_datap2[12] >> 4) << 12);
+					}
+					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 1], xdp, data, &xdp->left,
+						0, destp);
+
+					destp += 28;
+				}
+			}
+		}
 	}
 }
 
 //============================================
 //===  XA SPECIFIC ROUTINES
 //============================================
+typedef struct {
+	u8  filenum;
+	u8  channum;
+	u8  submode;
+	u8  coding;
+
+	u8  filenum2;
+	u8  channum2;
+	u8  submode2;
+	u8  coding2;
+} xa_subheader_t;
 
 #define SUB_SUB_EOF     (1<<7)  // end of file
 #define SUB_SUB_RT      (1<<6)  // real-time sector
@@ -245,7 +315,7 @@ static void xa_decode_data(xa_subheader_t* header, xa_decode_t* decoded, u8* xaD
 //============================================
 static int parse_xa_audio_sector(xa_decode_t* xdp,
 	xa_subheader_t* subheadp,
-	u8* sectorp,
+	unsigned char* sectorp,
 	int is_first_sector) {
 	if (is_first_sector) {
 		switch (AUDIO_CODING_GET_FREQ(subheadp->coding)) {
@@ -273,7 +343,7 @@ static int parse_xa_audio_sector(xa_decode_t* xdp,
 		xdp->nsamples = 18 * 28 * 8;
 		if (xdp->stereo == 1) xdp->nsamples /= 2;
 	}
-	xa_decode_data(subheadp, xdp, sectorp);
+	xa_decode_data(xdp, sectorp);
 
 	return 0;
 }
