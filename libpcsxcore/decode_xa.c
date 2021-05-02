@@ -89,194 +89,145 @@ void ADPCM_InitDecode(ADPCM_Decode_t* decp) {
 #define IK1(fid)	(-K1[fid])
 #endif
 
-static __inline void ADPCM_DecodeBlock16(const u8 block_header, xa_decode_t* header, const u16* samples, ADPCM_Decode_t* decp, int channel, short* destp)
-{
-	// Extract 4 or 8 bit nibble depending on BPS
-	int bps = header->nbits ? 8 : 4;
+static __inline void ADPCM_DecodeBlock16( ADPCM_Decode_t *decp, u8 filter_range, const void *vblockp, short *destp, int inc ) {
+	int i;
+	int range, filterid;
+	long fy0, fy1;
+	const u16 *blockp;
 
-	//Console.Warning("Bps: %01d", bps);
-	u32 word = 0;
-	u32 nibble = 0;
-	u32 finalSample = 0;
+	blockp = (const unsigned short *)vblockp;
+	filterid = (filter_range >>  4) & 0x0f;
+	range    = (filter_range >>  0) & 0x0f;
 
-	u8 shift = ((block_header >> 0) & 0x0f);
-	u8 filter = ((block_header >> 4) & 0x0f);
-	s32 filterPos = tbl_XA_Factor[filter][0];
-	s32 filterNeg = tbl_XA_Factor[filter][1];
+	fy0 = decp->y0;
+	fy1 = decp->y1;
 
-	for (u32 block = 0; block < bps; block++)
-	{
-		//printf("Bps: %01d", bps);
+	for (i = BLKSIZ/4; i; --i) {
+		long y;
+		long x0, x1, x2, x3;
 
-		s32 fy0, fy1;
+		y = *blockp++;
+		x3 = (short)( y        & 0xf000) >> range; x3 <<= SH;
+		x2 = (short)((y <<  4) & 0xf000) >> range; x2 <<= SH;
+		x1 = (short)((y <<  8) & 0xf000) >> range; x1 <<= SH;
+		x0 = (short)((y << 12) & 0xf000) >> range; x0 <<= SH;
 
-		fy0 = decp->y0;
-		fy1 = decp->y1;
+		x0 -= (IK0(filterid) * fy0 + (IK1(filterid) * fy1)) >> SHC; fy1 = fy0; fy0 = x0;
+		x1 -= (IK0(filterid) * fy0 + (IK1(filterid) * fy1)) >> SHC; fy1 = fy0; fy0 = x1;
+		x2 -= (IK0(filterid) * fy0 + (IK1(filterid) * fy1)) >> SHC; fy1 = fy0; fy0 = x2;
+		x3 -= (IK0(filterid) * fy0 + (IK1(filterid) * fy1)) >> SHC; fy1 = fy0; fy0 = x3;
 
-		for (int block = 0; block < 28; block++)
-		{
-			word = *samples++;
-			//printf("Shift: %02x", shift);
-			//printf("Filter: %02x", filter);
-			s16 sam = (word << 12) >> shift;
-			//printf("Data: %02x", sampleData);
-			//printf("Nibble: %02x", nibble);
-
-			finalSample = (sam << shift) + ((fy0 * IK0(filter)) + (fy1 * IK1(filter)) + 32) / 64;
-
-			XACLAMP(finalSample, -32768 << SH, 32767 << SH);
-			//printf("Sample: %02x", finalSample);
-			*(destp++) = finalSample;
-
-			decp->y0 = fy0;
-			decp->y1 = fy1;
-		}
+		CLAMP( x0, -32768<<SH, 32767<<SH ); *destp = x0 >> SH; destp += inc;
+		CLAMP( x1, -32768<<SH, 32767<<SH ); *destp = x1 >> SH; destp += inc;
+		CLAMP( x2, -32768<<SH, 32767<<SH ); *destp = x2 >> SH; destp += inc;
+		CLAMP( x3, -32768<<SH, 32767<<SH ); *destp = x3 >> SH; destp += inc;
 	}
+	decp->y0 = fy0;
+	decp->y1 = fy1;
 }
+
 static int headtable[4] = { 0,2,8,10 };
 
 //===========================================
 static void xa_decode_data(xa_decode_t* xdp, unsigned char* srcp) {
-	const u8* sound_groupsp;
-	const u8* sound_datap, * sound_datap2;
-	int         i, j, k, nbits;
-	u16			data[4096], * datap;
-	short* destp;
+	u8 *block_header, *sound_datap, *sound_datap2;
+	u8 filterPos;
+	int i, j, k, nbits;
+	u16 data[4096], *datap;
+	u16 *Left, *Right;
+	u16 *destp;
 
 	destp = xdp->pcm;
 	nbits = xdp->nbits == 4 ? 4 : 2;
 
-	if (xdp->stereo) { // stereo
-		if ((xdp->nbits == 8) && (xdp->freq == 37800)) { // level A
-			for (j = 0; j < 18; j++) {
-				sound_groupsp = srcp + j * 128;		// sound groups header
-				sound_datap = sound_groupsp + 16;	// sound data just after the header
+	//TODO. Extract and mix sample data
+	// block_header = xaData + 4;
 
-				for (i = 0; i < nbits; i++) {
-					datap = data;
-					sound_datap2 = sound_datap + i;
+	// 16 bytes after header
+	// sound_datap = block_header + 16;
 
-					for (k = 0; k < 14; k++, sound_datap2 += 8) {
-						*(datap++) = (u16)sound_datap2[0] |
-							(u16)(sound_datap2[4] << 8);
-					}
+	//Left = new u16[8192];
+	//Right = new u16[8192];
 
-					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 0], xdp, data, &xdp->left,
-						0, destp + 0);
+	for (i = 0; i < 18; i++)
+	{
+		block_header = srcp + i * 128;	// sound groups header
+		sound_datap = block_header + 16;	// sound data just after the header
 
-					datap = data;
-					sound_datap2 = sound_datap + i;
-					for (k = 0; k < 14; k++, sound_datap2 += 8) {
-						*(datap++) = (u16)sound_datap2[0] |
-							(u16)(sound_datap2[4] << 8);
-					}
-					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 1], xdp, data, &xdp->right,
-						1, destp + 1);
+		// Odds are Left positives are Right
+		// Note, the interleave changes based on SampleRate, Stenznek mentioned some games like rugrats
+		// handle this interleave incorrectly and will spam the buffer with too much data.
+		// We must crash and clear the buffer for audio to continue?
+		// The below is an attempt to extract word data into each seperate channel by following pcsx and No$
+		// We have to also condisder the amount of interleve. 1 / 8 means this should only process once every 8 sectors or so
+		for (u32 block = 0; block < 3; block++)
+		{
 
-					destp += 28 * 2;
+			// Is this extracting enough data at once?
+			// 2-2 Sample Rate     (0=37800Hz, 1=18900Hz, 2-3=Reserved)
+			// I don't believe were extracting the right data based on the size of bits and the sample rate
+			/*********************************************************
+			* PCSX SUGGESTS THIS FOR 4 BIT SOUND
+			* *(datap++) = (u32)(sound_datap2[0] & 0x0f) |
+			* (u32)((sound_datap2[4] & 0x0f) << 4) |
+			* (u32)((sound_datap2[8] & 0x0f) << 8) |
+			* (u32)((sound_datap2[12] & 0x0f) << 12);
+
+			* PCSX SUGGESTS THIS FOR 8 BIT SOUND
+			* *(datap++) = (U16)sound_datap2[0] |
+			* (U16)(sound_datap2[4] << 8);
+
+			* NO$ SUGGESTS BOTH CORRECT
+
+			* No$ Suggests this is an alternate way to extract samples
+			* t = signed4bit((src[16+blk+j*4] SHR (nibble*4)) AND 0Fh)
+			***************************************************************/
+			switch(nbits)
+			{
+				case 4:
+				datap = data;
+				for (k=0; k < 7; k++, sound_datap += 16)
+				{
+					*(datap++) = (u32)(sound_datap[0]) |
+					(u32)((sound_datap[4] & 0x0f) << 4) |
+					(u32)((sound_datap[8] & 0x0f) << 8) |
+					(u32)((sound_datap[12] & 0x0f) << 12);
 				}
+				datap += 28 * 2;
+				break;
+
+				case 8:
+				datap = data;
+
+				for (k=0; k < 14; k++, sound_datap += 8)
+				{
+					*(datap++) = (u16)sound_datap[0] |
+					(u16)(sound_datap[4] << 8);
+				}
+				datap += 28;
+				break;
+			}
+
+			if (xdp->stereo)
+			{
+				ADPCM_DecodeBlock16(&xdp->left, block_header[headtable[i] + 0], xdp, datap, 2);
+				ADPCM_DecodeBlock16(&xdp->right, block_header[headtable[i] + 1], xdp, datap, 2);
+
+				//Console.Warning("Sample L: %02x", decoded->pcm[0][i]);
+				//Console.Warning("Sample R: %02x", decoded->pcm[1][i]);
+			}
+			else
+			{
+				// Mono sound
+				ADPCM_DecodeBlock16(&xdp->left, block_header[headtable[i] + 0], xdp, datap, 1);
+				ADPCM_DecodeBlock16(&xdp->left, block_header[headtable[i] + 1], xdp, datap, 1);
+
+				//Console.Warning("Sample M: %02x", decoded->pcm[0][i]);
 			}
 		}
-		else { // level B/C
-			for (j = 0; j < 18; j++) {
-				sound_groupsp = srcp + j * 128;		// sound groups header
-				sound_datap = sound_groupsp + 16;	// sound data just after the header
-
-				for (i = 0; i < nbits; i++) {
-					datap = data;
-					sound_datap2 = sound_datap + i;
-
-					for (k = 0; k < 7; k++, sound_datap2 += 16) {
-						*(datap++) = (u16)(sound_datap2[0] & 0x0f) |
-							((u16)(sound_datap2[4] & 0x0f) << 4) |
-							((u16)(sound_datap2[8] & 0x0f) << 8) |
-							((u16)(sound_datap2[12] & 0x0f) << 12);
-					}
-					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 0], xdp, data, &xdp->left,
-						0, destp + 0);
-
-					datap = data;
-					sound_datap2 = sound_datap + i;
-					for (k = 0; k < 7; k++, sound_datap2 += 16) {
-						*(datap++) = (u16)(sound_datap2[0] >> 4) |
-							((u16)(sound_datap2[4] >> 4) << 4) |
-							((u16)(sound_datap2[8] >> 4) << 8) |
-							((u16)(sound_datap2[12] >> 4) << 12);
-					}
-					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 1], xdp, data, &xdp->right,
-						1, destp + 1);
-
-					destp += 28 * 2;
-				}
-			}
-		}
+		sound_datap += 128;
 	}
-	else { // mono
-		if ((xdp->nbits == 8) && (xdp->freq == 37800)) { // level A
-			for (j = 0; j < 18; j++) {
-				sound_groupsp = srcp + j * 128;		// sound groups header
-				sound_datap = sound_groupsp + 16;	// sound data just after the header
 
-				for (i = 0; i < nbits; i++) {
-					datap = data;
-					sound_datap2 = sound_datap + i;
-					for (k = 0; k < 14; k++, sound_datap2 += 8) {
-						*(datap++) = (u16)sound_datap2[0] |
-							(u16)(sound_datap2[4] << 8);
-					}
-					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 0], xdp, data, &xdp->left,
-						0, destp);
-
-					destp += 28;
-
-					datap = data;
-					sound_datap2 = sound_datap + i;
-					for (k = 0; k < 14; k++, sound_datap2 += 8) {
-						*(datap++) = (u16)sound_datap2[0] |
-							(u16)(sound_datap2[4] << 8);
-					}
-					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 1], xdp, data, &xdp->left,
-						0, destp);
-
-					destp += 28;
-				}
-			}
-		}
-		else { // level B/C
-			for (j = 0; j < 18; j++) {
-				sound_groupsp = srcp + j * 128;		// sound groups header
-				sound_datap = sound_groupsp + 16;	// sound data just after the header
-
-				for (i = 0; i < nbits; i++) {
-					datap = data;
-					sound_datap2 = sound_datap + i;
-					for (k = 0; k < 7; k++, sound_datap2 += 16) {
-						*(datap++) = (u16)(sound_datap2[0] & 0x0f) |
-							((u16)(sound_datap2[4] & 0x0f) << 4) |
-							((u16)(sound_datap2[8] & 0x0f) << 8) |
-							((u16)(sound_datap2[12] & 0x0f) << 12);
-					}
-					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 0], xdp, data, &xdp->left,
-						0, destp);
-
-					destp += 28;
-
-					datap = data;
-					sound_datap2 = sound_datap + i;
-					for (k = 0; k < 7; k++, sound_datap2 += 16) {
-						*(datap++) = (u16)(sound_datap2[0] >> 4) |
-							((u16)(sound_datap2[4] >> 4) << 4) |
-							((u16)(sound_datap2[8] >> 4) << 8) |
-							((u16)(sound_datap2[12] >> 4) << 12);
-					}
-					ADPCM_DecodeBlock16(sound_groupsp[headtable[i] + 1], xdp, data, &xdp->left,
-						0, destp);
-
-					destp += 28;
-				}
-			}
-		}
-	}
 }
 
 //============================================
